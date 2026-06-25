@@ -75,6 +75,41 @@ jobs:
 
               popd
 
+      - name: Assemble NanoKVM full image
+        run: |
+              set -e
+              pushd cvi_mmf_sdk
+                IMG=$(ls -t install/soc_sg2002_licheervnano_sd/images/*.img | head -1)
+                echo "base image: $IMG"
+                curl -fsSL -o latest.zip https://cdn.sipeed.com/nanokvm/latest.zip
+                rm -rf latest && unzip -q latest.zip
+                touch latest/kvm_new_img
+                LOOP=$(sudo losetup -fP --show "$IMG")
+                echo "loop=$LOOP"
+                mkdir -p mnt && sudo mount "${LOOP}p2" mnt
+                sudo cp -r latest mnt/kvmapp
+                sudo cp kvm/frp_0.59.0_linux_riscv64/frpc      mnt/usr/bin/
+                sudo cp kvm/tailscale_1.80.2_riscv64/tailscale  mnt/usr/bin/
+                sudo cp kvm/tailscale_1.80.2_riscv64/tailscaled mnt/usr/sbin/
+                sudo chmod +x mnt/usr/bin/frpc mnt/usr/bin/tailscale mnt/usr/sbin/tailscaled
+                sudo mkdir -p mnt/mnt/system/ko
+                sudo cp -f mnt/kvmapp/system/ko/soph_mipi_rx.ko mnt/mnt/system/ko/ || true
+                sudo rm -rf mnt/etc/init.d
+                sudo cp -rf mnt/kvmapp/system/init.d mnt/etc/init.d
+                sudo mkdir -p mnt/etc/kvm && sudo touch mnt/etc/kvm/ssh_stop
+                sudo chmod -R 755 mnt/kvmapp
+                echo "=== version ==="; cat mnt/kvmapp/version || true
+                echo "=== init.d ==="; ls mnt/etc/init.d
+                echo "=== bins ==="; file mnt/kvmapp/server/NanoKVM-Server mnt/usr/bin/frpc mnt/usr/sbin/tailscaled || true
+                echo "=== ko/ssh_stop/marker ==="; ls -l mnt/mnt/system/ko/soph_mipi_rx.ko mnt/etc/kvm/ssh_stop mnt/kvmapp/kvm_new_img
+                echo "=== NOTE: /usr/bin/picoclaw absent (known GAP); S96picoclaw will not start until provided ==="
+                ls mnt/usr/bin/picoclaw 2>/dev/null || echo "picoclaw binary: ABSENT (expected)"
+                sync; sudo umount mnt; sudo losetup -d "$LOOP"
+                OUT="install/soc_sg2002_licheervnano_sd/images/${BUILD_DATE}_NanoKVM_selfbuilt_full.img"
+                mv "$IMG" "$OUT"
+                echo "full image: $OUT"; ls -lh "$OUT"
+              popd
+
       - name: 'Upload Artifact'
         uses: actions/upload-artifact@v4
         if: always()
