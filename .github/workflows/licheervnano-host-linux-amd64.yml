@@ -87,6 +87,7 @@ jobs:
                 LOOP=$(sudo losetup -fP --show "$IMG")
                 echo "loop=$LOOP"
                 mkdir -p mnt && sudo mount "${LOOP}p2" mnt
+                echo "=== base /etc/init.d BEFORE (expect rcS) ==="; ls mnt/etc/init.d
                 sudo cp -r latest mnt/kvmapp
                 sudo cp kvm/frp_0.59.0_linux_riscv64/frpc      mnt/usr/bin/
                 sudo cp kvm/tailscale_1.80.2_riscv64/tailscale  mnt/usr/bin/
@@ -94,8 +95,8 @@ jobs:
                 sudo chmod +x mnt/usr/bin/frpc mnt/usr/bin/tailscale mnt/usr/sbin/tailscaled
                 sudo mkdir -p mnt/mnt/system/ko
                 sudo cp -f mnt/kvmapp/system/ko/soph_mipi_rx.ko mnt/mnt/system/ko/ || true
-                sudo rm -rf mnt/etc/init.d
-                sudo cp -rf mnt/kvmapp/system/init.d mnt/etc/init.d
+                sudo cp -f mnt/kvmapp/system/init.d/S* mnt/etc/init.d/
+                sudo chmod +x mnt/etc/init.d/S* mnt/kvmapp/system/init.d/S*
                 sudo mkdir -p mnt/etc/kvm && sudo touch mnt/etc/kvm/ssh_stop
                 sudo chmod -R 755 mnt/kvmapp
                 echo "=== version ==="; cat mnt/kvmapp/version || true
