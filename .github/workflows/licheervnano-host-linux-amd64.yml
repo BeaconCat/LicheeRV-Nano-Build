@@ -81,34 +81,85 @@ jobs:
               pushd cvi_mmf_sdk
                 IMG=$(ls -t install/soc_sg2002_licheervnano_sd/images/*.img | head -1)
                 echo "base image: $IMG"
+                # kvmapp payload = official full package (prebuilt kvm_system + web + picoclaw app layer)
                 curl -fsSL -o latest.zip https://cdn.sipeed.com/nanokvm/latest.zip
                 rm -rf latest && unzip -q latest.zip
-                touch latest/kvm_new_img
                 LOOP=$(sudo losetup -fP --show "$IMG")
                 echo "loop=$LOOP"
                 mkdir -p mnt && sudo mount "${LOOP}p2" mnt
-                echo "=== base /etc/init.d BEFORE (expect rcS) ==="; ls mnt/etc/init.d
+                echo "=== base /etc/init.d BEFORE (must contain rcS) ==="; ls mnt/etc/init.d
+
+                # --- inject kvmapp ---
                 sudo cp -r latest mnt/kvmapp
-                sudo cp kvm/frp_0.59.0_linux_riscv64/frpc      mnt/usr/bin/
+                sudo touch mnt/kvmapp/kvm_new_img          # first-boot init marker
+                sudo chmod -R 755 mnt/kvmapp
+
+                # --- default video/KVM config (created only if the package omits them) ---
+                sudo install -d mnt/kvmapp/kvm
+                set_default(){ [ -e "mnt/kvmapp/kvm/$1" ] || echo "$2" | sudo tee "mnt/kvmapp/kvm/$1" >/dev/null; }
+                set_default fps 30
+                set_default height 1080
+                set_default now_fps 0
+                set_default qlty 60
+                set_default res 0
+                set_default state 1
+                set_default type mjpeg
+                set_default width 1920
+
+                # --- extra binaries ---
+                sudo cp kvm/frp_0.59.0_linux_riscv64/frpc       mnt/usr/bin/
                 sudo cp kvm/tailscale_1.80.2_riscv64/tailscale  mnt/usr/bin/
                 sudo cp kvm/tailscale_1.80.2_riscv64/tailscaled mnt/usr/sbin/
                 sudo chmod +x mnt/usr/bin/frpc mnt/usr/bin/tailscale mnt/usr/sbin/tailscaled
+
+                # --- MIPI RX kernel module ---
                 sudo mkdir -p mnt/mnt/system/ko
                 sudo cp -f mnt/kvmapp/system/ko/soph_mipi_rx.ko mnt/mnt/system/ko/ || true
+
+                # --- init.d OVERLAY (preserve base rcS; the package ships only S* scripts) ---
                 sudo cp -f mnt/kvmapp/system/init.d/S* mnt/etc/init.d/
                 sudo chmod +x mnt/etc/init.d/S* mnt/kvmapp/system/init.d/S*
-                sudo mkdir -p mnt/etc/kvm && sudo touch mnt/etc/kvm/ssh_stop
-                sudo chmod -R 755 mnt/kvmapp
-                echo "=== version ==="; cat mnt/kvmapp/version || true
-                echo "=== init.d ==="; ls mnt/etc/init.d
-                echo "=== bins ==="; file mnt/kvmapp/server/NanoKVM-Server mnt/usr/bin/frpc mnt/usr/sbin/tailscaled || true
-                echo "=== ko/ssh_stop/marker ==="; ls -l mnt/mnt/system/ko/soph_mipi_rx.ko mnt/etc/kvm/ssh_stop mnt/kvmapp/kvm_new_img
-                echo "=== NOTE: /usr/bin/picoclaw absent (known GAP); S96picoclaw will not start until provided ==="
-                ls mnt/usr/bin/picoclaw 2>/dev/null || echo "picoclaw binary: ABSENT (expected)"
+
+                # --- kvm dirs; SSH left ON (no ssh_stop) to match the verified-bootable build ---
+                sudo mkdir -p mnt/etc/kvm
+
+                echo "=== version ===";  cat mnt/kvmapp/version 2>/dev/null || true
+                echo "=== init.d ===";   ls mnt/etc/init.d
+                echo "=== kvm cfg ===";  ls mnt/kvmapp/kvm
                 sync; sudo umount mnt; sudo losetup -d "$LOOP"
                 OUT="install/soc_sg2002_licheervnano_sd/images/${BUILD_DATE}_NanoKVM_selfbuilt_full.img"
                 mv "$IMG" "$OUT"
                 echo "full image: $OUT"; ls -lh "$OUT"
+                echo "FULL_IMG=$OUT" >> "$GITHUB_ENV"
+              popd
+
+      - name: Verify full image
+        run: |
+              set -e
+              pushd cvi_mmf_sdk
+                LOOP=$(sudo losetup -fP --show "$FULL_IMG")
+                mkdir -p vmnt && sudo mount -o ro "${LOOP}p2" vmnt
+                M=vmnt
+                fail=0
+                ck(){ if eval "$2"; then printf '  OK   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; fail=1; fi; }
+                echo "=== critical checks ==="
+                ck "rcS present (services boot)"        "[ -f $M/etc/init.d/rcS ]"
+                ck "S95nanokvm executable"              "[ -x $M/etc/init.d/S95nanokvm ]"
+                ck "kvm_system binary present"          "[ -s $M/kvmapp/kvm_system/kvm_system ]"
+                ck "NanoKVM-Server present"             "[ -s $M/kvmapp/server/NanoKVM-Server ]"
+                ck "server web UI present"              "[ -f $M/kvmapp/server/web/index.html ]"
+                ck "dl_lib shared objects present"      "[ \$(ls $M/kvmapp/server/dl_lib/*.so 2>/dev/null | wc -l) -gt 0 ]"
+                ck "soph_mipi_rx.ko installed"          "[ -f $M/mnt/system/ko/soph_mipi_rx.ko ]"
+                ck "frpc executable"                    "[ -x $M/usr/bin/frpc ]"
+                ck "tailscaled executable"              "[ -x $M/usr/sbin/tailscaled ]"
+                ck "kvm_new_img first-boot marker"      "[ -e $M/kvmapp/kvm_new_img ]"
+                echo "=== info ==="
+                file -b "$M/kvmapp/server/NanoKVM-Server" || true
+                echo "kvm cfg: $(ls $M/kvmapp/kvm | tr '\n' ' ')"
+                ls $M/usr/bin/picoclaw 2>/dev/null && echo "picoclaw binary: present" || echo "NOTE: /usr/bin/picoclaw absent (S96picoclaw stays idle until provided)"
+                sync; sudo umount vmnt; sudo losetup -d "$LOOP"
+                [ "$fail" = 0 ] || { echo "IMAGE VERIFICATION FAILED"; exit 1; }
+                echo "IMAGE VERIFICATION PASSED"
               popd
 
       - name: 'Upload Artifact'
